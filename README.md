@@ -73,8 +73,8 @@ Open **Create Alert**, choose *Titan VWAP Pro* as the condition, then pick one o
 
 - VWAP Reclaim (bullish)
 - VWAP Lost (bearish)
-- Price at +σ2 band
-- Price at −σ2 band
+- Price at +2 sigma band
+- Price at -2 sigma band
 - Anchored VWAP crossed up
 - Anchored VWAP crossed down
 
@@ -105,3 +105,13 @@ Alert messages include the ticker, interval and the relevant price.
 These indicators are analytical tools for informational and educational purposes only. They are not investment advice or a recommendation to buy or sell any security, future or other instrument. Trading involves substantial risk of loss. Past signals don't guarantee future results.
 
 © Titan Markets LLC. All rights reserved.
+
+---
+
+## Troubleshooting
+
+**`mismatched character "\n" expecting "` (or other errors on the last lines)**
+The script got corrupted during pasting. TradingView's editor can add extra quotes or brackets while you paste, and pasting over part of an older version can leave stray lines behind. To fix it:
+1. Click inside the Pine Editor and press **Cmd/Ctrl + A**, then **Delete**, so the editor is completely empty.
+2. On GitHub, open [`TitanVWAPPro.pine`](TitanVWAPPro.pine) and click **Raw** (or the copy icon) to copy the full file.
+3. Paste it in one go. The last line should end in `crossed BELOW the anchored VWAP.")`, with nothing after it.
