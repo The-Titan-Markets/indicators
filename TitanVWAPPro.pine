@@ -86,9 +86,9 @@ colAvwap   = input.color(#22D3EE, "Anchored VWAP colour", group = G_ANCH, toolti
 widAvwap   = input.int(2, "Line width", minval = 1, maxval = 5, group = G_ANCH)
 
 // ── Signals ──────────────────────────────────────────────────────────────────
-showTouch   = input.bool(true, "Band-touch signals (±σ2)", group = G_SIG, tooltip = "Flags a stretched, mean-reversion-candidate bar: high ≥ +σ2 band or low ≤ −σ2 band.")
+showTouch   = input.bool(true, "Band-touch signals (±σ2)", group = G_SIG, tooltip = "Flags a stretched, mean-reversion-candidate bar: high ≥ +σ2 band or low ≤ -σ2 band.")
 colTouchUp  = input.color(#F87171, "+σ2 colour", group = G_SIG, inline = "t")
-colTouchDn  = input.color(#34D399, "−σ2 colour", group = G_SIG, inline = "t")
+colTouchDn  = input.color(#34D399, "-σ2 colour", group = G_SIG, inline = "t")
 showReclaim = input.bool(true, "VWAP reclaim / lost signals", group = G_SIG, tooltip = "Close crosses back through session VWAP — trend confirmation.")
 colReclaim  = input.color(#34D399, "Reclaim colour", group = G_SIG, inline = "r")
 colLost     = input.color(#F87171, "Lost colour",    group = G_SIG, inline = "r")
@@ -152,7 +152,7 @@ f_sessionVWAP(startMins, tz) =>
     cumV   += v
     cumP2V += src * src * v
     float vw = cumV > 0 ? cumPV / cumV : na
-    // Volume-weighted variance: E_w[x²] − E_w[x]².  NOT ta.stdev(), which would
+    // Volume-weighted variance: E_w[x²] - E_w[x]².  NOT ta.stdev(), which would
     // weight every bar equally and is the single most common error in VWAP-band
     // implementations. math.max(..., 0) guards against float cancellation.
     float vr = cumV > 0 ? math.max(cumP2V / cumV - vw * vw, 0.0) : na
@@ -180,20 +180,20 @@ dashOn = bar_index % 4 < 2
 pVwap = plot(showVwap ? vwapVal : na, "Session VWAP", color = colVwap, linewidth = widVwap)
 
 plot(showB1 ? upper1 : na, "+σ1", color = colBand, linewidth = widB1)
-plot(showB1 ? lower1 : na, "−σ1", color = colBand, linewidth = widB1)
+plot(showB1 ? lower1 : na, "-σ1", color = colBand, linewidth = widB1)
 plot(showB2 and dashOn ? upper2 : na, "+σ2", color = color.new(colBand, 25), linewidth = widB2, style = plot.style_linebr)
-plot(showB2 and dashOn ? lower2 : na, "−σ2", color = color.new(colBand, 25), linewidth = widB2, style = plot.style_linebr)
+plot(showB2 and dashOn ? lower2 : na, "-σ2", color = color.new(colBand, 25), linewidth = widB2, style = plot.style_linebr)
 
 hVwap = plot(showCloud ? vwapVal : na, "· fill ref: VWAP", color = na, editable = false)
 hU1   = plot(showCloud and showB1 ? upper1 : na, "· fill ref: +σ1", color = na, editable = false)
-hL1   = plot(showCloud and showB1 ? lower1 : na, "· fill ref: −σ1", color = na, editable = false)
+hL1   = plot(showCloud and showB1 ? lower1 : na, "· fill ref: -σ1", color = na, editable = false)
 hU2   = plot(showCloud and showB2 ? upper2 : na, "· fill ref: +σ2", color = na, editable = false)
-hL2   = plot(showCloud and showB2 ? lower2 : na, "· fill ref: −σ2", color = na, editable = false)
+hL2   = plot(showCloud and showB2 ? lower2 : na, "· fill ref: -σ2", color = na, editable = false)
 
 fill(hVwap, hU1, color = color.new(colBand, fillInner), title = "Cloud · VWAP→+σ1")
-fill(hVwap, hL1, color = color.new(colBand, fillInner), title = "Cloud · VWAP→−σ1")
+fill(hVwap, hL1, color = color.new(colBand, fillInner), title = "Cloud · VWAP→-σ1")
 fill(hU1,   hU2, color = color.new(colBand, fillOuter), title = "Cloud · +σ1→+σ2")
-fill(hL1,   hL2, color = color.new(colBand, fillOuter), title = "Cloud · −σ1→−σ2")
+fill(hL1,   hL2, color = color.new(colBand, fillOuter), title = "Cloud · -σ1→-σ2")
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  4. ANCHORED VWAP
@@ -269,14 +269,14 @@ reclaim = showReclaim and not na(vwapVal) and not na(vwapVal[1]) and close > vwa
 lost    = showReclaim and not na(vwapVal) and not na(vwapVal[1]) and close < vwapVal and close[1] > vwapVal[1]
 
 plotshape(touchUp, "Touch +σ2", style = shape.triangledown, location = location.abovebar, color = colTouchUp, size = size.tiny)
-plotshape(touchDn, "Touch −σ2", style = shape.triangleup,   location = location.belowbar, color = colTouchDn, size = size.tiny)
+plotshape(touchDn, "Touch -σ2", style = shape.triangleup,   location = location.belowbar, color = colTouchDn, size = size.tiny)
 plotshape(reclaim, "VWAP Reclaim", style = shape.circle, location = location.belowbar, color = colReclaim, size = size.tiny)
 plotshape(lost,    "VWAP Lost",    style = shape.circle, location = location.abovebar, color = colLost,    size = size.tiny)
 
 if touchUp
     f_pushSignal(label.new(bar_index, high, "+" + str.tostring(mult2, "#.##") + "σ", style = label.style_none, textcolor = colTouchUp, size = size.tiny, yloc = yloc.abovebar))
 if touchDn
-    f_pushSignal(label.new(bar_index, low, "−" + str.tostring(mult2, "#.##") + "σ", style = label.style_none, textcolor = colTouchDn, size = size.tiny, yloc = yloc.belowbar))
+    f_pushSignal(label.new(bar_index, low, "-" + str.tostring(mult2, "#.##") + "σ", style = label.style_none, textcolor = colTouchDn, size = size.tiny, yloc = yloc.belowbar))
 if reclaim
     f_pushSignal(label.new(bar_index, low, "VWAP RECLAIM", style = label.style_label_up, color = color.new(#0B0E11, 15), textcolor = colReclaim, size = size.tiny, yloc = yloc.belowbar))
 if lost
@@ -418,9 +418,9 @@ if barstate.islast
 avwapCrossUp = not na(avwap) and ta.crossover(close, avwap)
 avwapCrossDn = not na(avwap) and ta.crossunder(close, avwap)
 
-alertcondition(reclaim,      "VWAP Reclaim (bullish)", "TITAN VWAP PRO · {{ticker}} {{interval}} — VWAP RECLAIM: close {{close}} back above session VWAP. Trend confirmation long.")
-alertcondition(lost,         "VWAP Lost (bearish)",    "TITAN VWAP PRO · {{ticker}} {{interval}} — VWAP LOST: close {{close}} back below session VWAP. Trend confirmation short.")
-alertcondition(touchUp,      "Price at +σ2 band",      "TITAN VWAP PRO · {{ticker}} {{interval}} — price tagged the UPPER σ2 band at {{high}}. Stretched / mean-reversion candidate short.")
-alertcondition(touchDn,      "Price at −σ2 band",      "TITAN VWAP PRO · {{ticker}} {{interval}} — price tagged the LOWER σ2 band at {{low}}. Stretched / mean-reversion candidate long.")
-alertcondition(avwapCrossUp, "Anchored VWAP crossed up",   "TITAN VWAP PRO · {{ticker}} {{interval}} — close {{close}} crossed ABOVE the anchored VWAP.")
-alertcondition(avwapCrossDn, "Anchored VWAP crossed down", "TITAN VWAP PRO · {{ticker}} {{interval}} — close {{close}} crossed BELOW the anchored VWAP.")
+alertcondition(reclaim,      "VWAP Reclaim (bullish)", "TITAN VWAP PRO | {{ticker}} {{interval}} - VWAP RECLAIM: close {{close}} back above session VWAP. Trend confirmation long.")
+alertcondition(lost,         "VWAP Lost (bearish)",    "TITAN VWAP PRO | {{ticker}} {{interval}} - VWAP LOST: close {{close}} back below session VWAP. Trend confirmation short.")
+alertcondition(touchUp,      "Price at +2 sigma band",      "TITAN VWAP PRO | {{ticker}} {{interval}} - price tagged the UPPER 2-sigma band at {{high}}. Stretched / mean-reversion candidate short.")
+alertcondition(touchDn,      "Price at -2 sigma band",      "TITAN VWAP PRO | {{ticker}} {{interval}} - price tagged the LOWER 2-sigma band at {{low}}. Stretched / mean-reversion candidate long.")
+alertcondition(avwapCrossUp, "Anchored VWAP crossed up",   "TITAN VWAP PRO | {{ticker}} {{interval}} - close {{close}} crossed ABOVE the anchored VWAP.")
+alertcondition(avwapCrossDn, "Anchored VWAP crossed down", "TITAN VWAP PRO | {{ticker}} {{interval}} - close {{close}} crossed BELOW the anchored VWAP.")
