@@ -26,8 +26,17 @@
 //      locked. This is inherent to any intrabar-evaluated signal and matches
 //      how TradingView's own built-ins behave.
 //    • The stats table is *deliberately* a live readout of the last bar.
-//    • request.security() uses barmerge.lookahead_off and, by default, the
-//      last confirmed higher-timeframe value (see "Use confirmed HTF values").
+//    • request.security() always uses barmerge.lookahead_off. The MTF table
+//      shows live higher-timeframe values by default; "Use confirmed HTF
+//      values" switches it to last-closed (non-repainting) values.
+//
+//  Live behaviour
+//    • Pine re-executes the script on every incoming tick of the real-time
+//      bar, so VWAP, bands, anchored VWAP, price tags, the HUD and the MTF table
+//      all move with live price. `var` accumulators are rolled back between
+//      ticks, so a bar's volume is never counted twice.
+//    • Symbols without volume (e.g. TVC:NDQ, SP:SPX, most indices) fall back to
+//      equal bar weights so the lines still draw; the HUD flags this.
 // ══════════════════════════════════════════════════════════════════════════════
 
 //@version=6
@@ -55,6 +64,7 @@ sessTz    = input.string("America/New_York", "Timezone", group = G_SESS, options
 showVwap  = input.bool(true, "Show session VWAP", group = G_VWAP)
 colVwap   = input.color(#F5A623, "Line colour",   group = G_VWAP, tooltip = "Titan brand gold.")
 widVwap   = input.int(2, "Line width", minval = 1, maxval = 5, group = G_VWAP)
+showTags  = input.bool(true, "Live price tags at right edge", group = G_VWAP, tooltip = "Price tags for VWAP, bands and anchored VWAP pinned just right of the live bar. They move with every tick.")
 
 // ── Bands ────────────────────────────────────────────────────────────────────
 showB1    = input.bool(true,  "Show ±σ1 band", group = G_BAND, inline = "b1")
@@ -106,7 +116,7 @@ mtfTf1     = input.timeframe("15",  "Timeframe 1", group = G_MTF)
 mtfTf2     = input.timeframe("60",  "Timeframe 2", group = G_MTF)
 mtfTf3     = input.timeframe("240", "Timeframe 3", group = G_MTF)
 mtfUse3    = input.bool(false, "Include timeframe 3", group = G_MTF)
-mtfConfirm = input.bool(true, "Use confirmed HTF values (non-repainting)", group = G_MTF, tooltip = "ON  → reads the last *closed* higher-timeframe value. Historical and real-time agree exactly; no repaint.\nOFF → reads the still-forming higher-timeframe value. More timely, but the reading updates until that HTF bar closes.")
+mtfConfirm = input.bool(false, "Use confirmed HTF values (non-repainting)", group = G_MTF, tooltip = "ON  → reads the last *closed* higher-timeframe value. Historical and real-time agree exactly; no repaint.\nOFF → reads the still-forming higher-timeframe value. More timely, but the reading updates until that HTF bar closes.")
 
 // ── Branding ─────────────────────────────────────────────────────────────────
 showTitle  = input.bool(true, "Show 'TITAN VWAP PRO' tag", group = G_BRAND)
@@ -136,6 +146,15 @@ var color C_HUD_HI   = #F5A623                  // amber value highlight
 // the session start, whatever the chart resolution, and it keeps working across
 // overnight/globex sessions where a single "trading day" spans two dates.
 // Day extraction is timezone-aware, so DST shifts follow the exchange clock.
+// Bar weight. TradingView provides no volume for index symbols (TVC:NDQ,
+// SP:SPX, TVC:DJI ...). Weighting by zero volume would leave VWAP blank, so on
+// those symbols — or any bar whose volume is missing — each bar is weighted
+// equally (a session TWAP). The stats panel labels this "EQUAL WT".
+noVolume = syminfo.volumetype == "n/a"
+
+f_weight() =>
+    noVolume or na(volume) ? 1.0 : volume
+
 f_sessionVWAP(startMins, tz) =>
     var float cumPV  = 0.0   // Σ volume × hlc3
     var float cumV   = 0.0   // Σ volume
@@ -146,7 +165,7 @@ f_sessionVWAP(startMins, tz) =>
         cumPV  := 0.0
         cumV   := 0.0
         cumP2V := 0.0
-    float v   = nz(volume)
+    float v   = f_weight()
     float src = hlc3
     cumPV  += src * v
     cumV   += v
@@ -223,8 +242,9 @@ if isAnchorBar
     aBarIx := bar_index
     aPrice := close
 
-aCumPV += hlc3 * nz(volume)
-aCumV  += nz(volume)
+aW      = f_weight()
+aCumPV += hlc3 * aW
+aCumV  += aW
 avwap   = aCumV > 0 ? aCumPV / aCumV : na
 
 // Dashed accent line, same 2-on / 2-off mask as the σ2 bands.
@@ -317,14 +337,31 @@ f_vol(v) =>
 
 devSigma = bandsReady ? (close - vwapVal) / sigma : na
 
-var table statsTbl = table.new(position.top_right, 2, 9, bgcolor = C_HUD_BG, border_color = C_HUD_EDGE, border_width = 1, frame_color = C_HUD_EDGE, frame_width = 1)
+var table statsTbl = table.new(position.top_right, 2, 10, bgcolor = C_HUD_BG, border_color = C_HUD_EDGE, border_width = 1, frame_color = C_HUD_EDGE, frame_width = 1)
+
+// mm:ss (or h:mm:ss) from a millisecond duration.
+f_clock(ms) =>
+    secs = math.max(math.floor(ms / 1000), 0)
+    hh   = math.floor(secs / 3600)
+    mm   = math.floor((secs % 3600) / 60)
+    ss   = secs % 60
+    (hh > 0 ? str.tostring(hh) + ":" : "") + str.format("{0,number,00}:{1,number,00}", mm, ss)
+
+// Live status. barstate.isrealtime is true only while ticks are arriving on the
+// newest bar. The bar-close countdown uses timenow, which advances each time
+// the script runs — i.e. on every tick — so it counts down with live trading
+// and pauses when no trades print.
+isLive     = barstate.isrealtime
+statusKey  = timeframe.isdwm ? "NOTE" : isLive ? "● LIVE" : "○ CLOSED"
+statusTxt  = timeframe.isdwm ? "session VWAP needs intraday TF" : isLive ? (na(time_close) ? "streaming" : "bar closes " + f_clock(time_close - timenow)) : "last " + str.format_time(time, "MMM d HH:mm", sessTz)
+statusCol  = timeframe.isdwm ? C_HUD_HI : isLive ? #34D399 : C_HUD_DIM
 
 f_row(t, r, k, v, vc) =>
     table.cell(t, 0, r, k, text_color = C_HUD_DIM, text_size = f_size(statsSize), text_halign = text.align_left)
     table.cell(t, 1, r, v, text_color = vc,        text_size = f_size(statsSize), text_halign = text.align_right)
 
 if barstate.islast
-    table.clear(statsTbl, 0, 0, 1, 8)
+    table.clear(statsTbl, 0, 0, 1, 9)
     if showStats
         table.set_position(statsTbl, f_pos(statsPos))
         table.cell(statsTbl, 0, 0, "TITAN VWAP", text_color = C_HUD_HI, text_size = f_size(statsSize), text_halign = text.align_left)
@@ -336,7 +373,38 @@ if barstate.islast
         f_row(statsTbl, 5, "VWAP", f_px(vwapVal), C_HUD_HI)
         f_row(statsTbl, 6, "σ",    na(sigma) ? "—" : str.tostring(sigma, format.mintick), C_HUD_TXT)
         f_row(statsTbl, 7, "DEV",  na(devSigma) ? "—" : str.tostring(devSigma, "0.00") + "σ", math.abs(nz(devSigma)) >= mult2 ? C_HUD_HI : C_HUD_TXT)
-        f_row(statsTbl, 8, "VOL  bar/sess", f_vol(volume) + "  /  " + f_vol(sessVol), C_HUD_TXT)
+        f_row(statsTbl, 8, "VOL  bar/sess", noVolume ? "n/a · EQUAL WT" : f_vol(volume) + "  /  " + f_vol(sessVol), noVolume ? C_HUD_HI : C_HUD_TXT)
+        f_row(statsTbl, 9, statusKey, statusTxt, statusCol)
+
+// ── Live price tags ──────────────────────────────────────────────────────────
+// One persistent label per level, re-positioned on the last bar every tick —
+// six drawing objects total, never recreated, so no cleanup is needed.
+var label tagVwap = na
+var label tagU1   = na
+var label tagL1   = na
+var label tagU2   = na
+var label tagL2   = na
+var label tagAv   = na
+
+f_tag(lb, y, txt, bg) =>
+    label l = lb
+    if na(y)
+        label.delete(l)
+        l := na
+    else if na(l)
+        l := label.new(bar_index + 3, y, txt, style = label.style_label_left, color = bg, textcolor = #0B0E11, size = size.tiny)
+    else
+        label.set_xy(l, bar_index + 3, y)
+        label.set_text(l, txt)
+    l
+
+if barstate.islast
+    tagVwap := f_tag(tagVwap, showTags and showVwap ? vwapVal : na, "VWAP " + f_px(vwapVal), colVwap)
+    tagU1   := f_tag(tagU1, showTags and showB1 and bandsReady ? upper1 : na, "+" + str.tostring(mult1, "#.##") + "σ " + f_px(upper1), color.new(colBand, 10))
+    tagL1   := f_tag(tagL1, showTags and showB1 and bandsReady ? lower1 : na, "-" + str.tostring(mult1, "#.##") + "σ " + f_px(lower1), color.new(colBand, 10))
+    tagU2   := f_tag(tagU2, showTags and showB2 and bandsReady ? upper2 : na, "+" + str.tostring(mult2, "#.##") + "σ " + f_px(upper2), color.new(colBand, 40))
+    tagL2   := f_tag(tagL2, showTags and showB2 and bandsReady ? lower2 : na, "-" + str.tostring(mult2, "#.##") + "σ " + f_px(lower2), color.new(colBand, 40))
+    tagAv   := f_tag(tagAv, showTags and showAvwap ? avwap : na, "AVWAP " + f_px(avwap), colAvwap)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  7. MULTI-TIMEFRAME CONTEXT TABLE
@@ -349,7 +417,10 @@ if barstate.islast
 //    • "raw"       → the still-forming HTF value: timely, updates until close.
 //    • "confirmed" → expr[1] evaluated *inside* the HTF context, i.e. the last
 //                    fully closed HTF bar. Historical and real-time agree, so
-//                    the reading never repaints. This is the default.
+//                    the reading never repaints.
+//  Default is "raw" (live): the table is a last-bar readout only — no plot,
+//  signal or alert depends on it — so live values carry no repaint risk to
+//  anything historical.
 //  barmerge.lookahead_off everywhere — lookahead_on would leak future data.
 
 f_htfVwapRaw() =>
@@ -384,7 +455,7 @@ if barstate.islast
         table.set_position(mtfTbl, f_pos(mtfPos))
         table.cell(mtfTbl, 0, 0, "VWAP", text_color = C_HUD_HI,  text_size = size.tiny, text_halign = text.align_left)
         table.cell(mtfTbl, 1, 0, "VALUE", text_color = C_HUD_DIM, text_size = size.tiny, text_halign = text.align_right)
-        table.cell(mtfTbl, 2, 0, mtfConfirm ? "✓" : "~", text_color = C_HUD_DIM, text_size = size.tiny, text_halign = text.align_center)
+        table.cell(mtfTbl, 2, 0, mtfConfirm ? "CLOSED" : "LIVE", text_color = mtfConfirm ? C_HUD_DIM : #34D399, text_size = size.tiny, text_halign = text.align_center)
         f_mtfRow(mtfTbl, 1, timeframe.period + " ·", vwapVal)
         f_mtfRow(mtfTbl, 2, mtfTf1, htf1)
         f_mtfRow(mtfTbl, 3, mtfTf2, htf2)

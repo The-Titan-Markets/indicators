@@ -8,6 +8,14 @@ Pine Script indicators built and maintained by **Titan Markets LLC** for client 
 
 ---
 
+## Live updating
+
+Titan VWAP Pro recalculates on every price tick. VWAP, the bands, the anchored VWAP, the price tags, the stats panel and the multi-timeframe table all move with live price.
+
+- **Use an intraday chart** (1m–1h). On a daily chart, each bar is its own session, so the VWAP just follows each bar's average price.
+- **Symbols without volume:** TradingView provides no volume for index symbols such as `TVC:NDQ`, `SP:SPX` and `TVC:DJI`. On those symbols the indicator gives every bar equal weight (a time-weighted average), so the lines still draw. The stats panel shows `EQUAL WT` when this happens. For a true volume-weighted VWAP on the Nasdaq 100, use a symbol with volume, such as `CME_MINI:NQ1!` or `NASDAQ:QQQ`.
+- **Delayed data:** some exchanges are delayed on free TradingView plans. The indicator can only update as fast as the data feed it receives.
+
 ## Installation
 
 1. Open any chart on [TradingView](https://www.tradingview.com/) and open the **Pine Editor** panel at the bottom of the screen.
@@ -28,6 +36,7 @@ Session VWAP with volume-weighted standard deviation bands, an independently anc
 - Resets once per session at a configurable start time. The default is **09:30 America/New_York**, which matches the RTH open for CME equity index futures (ES, NQ, YM, RTY) and US cash equities.
 - Works on 24-hour futures sessions without drifting. The reset fires on exactly one bar per session, whatever the chart resolution.
 - σ is a true **volume-weighted** standard deviation (`E_w[x²] − E_w[x]²`), not a simple `ta.stdev()`.
+- **Price tags at the right edge:** tags for VWAP, each band and the anchored VWAP sit just right of the current bar and move with every tick.
 
 #### 2. Deviation bands
 - **±σ1** bands are solid lines. **±σ2** bands are dashed lines with a little more transparency.
@@ -54,8 +63,15 @@ Each signal type has its own toggle and colour. Older signal labels are removed 
 #### 5. Live stats panel
 A compact dark HUD card showing values for the current bar: **O / H / L / C**, **VWAP**, **σ**, **DEV** (distance from VWAP in σ units, for example `-1.91σ`) and **Volume** (bar and session). DEV turns amber once price is beyond the σ2 multiplier.
 
+The last row shows whether the data is live:
+- **● LIVE:** ticks are arriving. It also shows a countdown to the current bar's close.
+- **○ CLOSED:** the market is shut. It also shows when the last bar printed.
+- **NOTE:** you're on a daily, weekly or monthly chart. Session VWAP only makes sense on intraday timeframes.
+
 #### 6. Multi-timeframe table
 Shows the session VWAP for the chart timeframe and up to three higher timeframes (defaults **15m** and **1H**, with an optional third). Each row has a ▲/▼ marker for whether price is above or below that VWAP. The table can be toggled, and its position is configurable.
+
+The table shows **live** higher-timeframe values by default, and the header reads `LIVE`. Turn on *Use confirmed HTF values* to show the last closed higher-timeframe bar instead. The header then reads `CLOSED`.
 
 #### 7. Branding
 - A `TITAN VWAP PRO` tag with a configurable position.
@@ -109,6 +125,12 @@ These indicators are analytical tools for informational and educational purposes
 ---
 
 ## Troubleshooting
+
+**No VWAP lines on an index chart (older versions)**
+Versions before this update left the chart blank on symbols with no volume, such as `TVC:NDQ`. Paste the latest script. It falls back to equal bar weights on those symbols.
+
+**Stats panel shows `○ CLOSED` during market hours**
+TradingView isn't sending live data for this symbol. The market may be on a holiday, the feed may be delayed on your plan, or the exchange's real-time data may require a subscription.
 
 **`mismatched character "\n" expecting "` (or other errors on the last lines)**
 The script got corrupted during pasting. TradingView's editor can add extra quotes or brackets while you paste, and pasting over part of an older version can leave stray lines behind. To fix it:
