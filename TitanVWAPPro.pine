@@ -1,0 +1,426 @@
+// ══════════════════════════════════════════════════════════════════════════════
+//  TITAN VWAP PRO
+//  © Titan Markets LLC — client distribution build
+//
+//  Session VWAP + volume-weighted deviation bands, an independently anchored
+//  VWAP, mean-reversion / trend-confirmation signals, a live stats HUD and a
+//  multi-timeframe VWAP alignment table.
+//
+//  Sections
+//    1. Inputs
+//    2. Core session VWAP + volume-weighted standard deviation
+//    3. Deviation bands (cloud)
+//    4. Anchored VWAP
+//    5. Signal markers
+//    6. Live stats panel
+//    7. Multi-timeframe context table
+//    8. Branding
+//    9. Alerts
+//
+//  Repainting policy
+//    • Every plotted series (VWAP, bands, anchored VWAP) is built from the
+//      running cumulative sums of the *current* bar. On a closed bar those
+//      values are final and never change — no repaint.
+//    • Signal markers are evaluated on the live bar and therefore may appear
+//      and disappear while that bar is forming; once the bar closes they are
+//      locked. This is inherent to any intrabar-evaluated signal and matches
+//      how TradingView's own built-ins behave.
+//    • The stats table is *deliberately* a live readout of the last bar.
+//    • request.security() uses barmerge.lookahead_off and, by default, the
+//      last confirmed higher-timeframe value (see "Use confirmed HTF values").
+// ══════════════════════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("Titan VWAP Pro", shorttitle="TITAN VWAP", overlay = true, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  1. INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+var string G_SESS  = "① Session"
+var string G_VWAP  = "② Session VWAP"
+var string G_BAND  = "③ Deviation Bands"
+var string G_ANCH  = "④ Anchored VWAP"
+var string G_SIG   = "⑤ Signals"
+var string G_STAT  = "⑥ Stats Panel"
+var string G_MTF   = "⑦ Multi-Timeframe"
+var string G_BRAND = "⑧ Branding"
+
+// ── Session ──────────────────────────────────────────────────────────────────
+sessHour  = input.int(9,  "Session start — hour",   minval = 0, maxval = 23, group = G_SESS, inline = "st", tooltip = "Bar on which cumulative VWAP sums reset. Default 09:30 America/New_York = RTH open for CME equity index futures (ES/NQ/YM/RTY) and US cash equities.")
+sessMin   = input.int(30, "minute",                 minval = 0, maxval = 59, group = G_SESS, inline = "st")
+sessTz    = input.string("America/New_York", "Timezone", group = G_SESS, options = ["America/New_York", "America/Chicago", "America/Los_Angeles", "UTC", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Asia/Hong_Kong", "Asia/Kolkata", "Australia/Sydney"])
+
+// ── Session VWAP ─────────────────────────────────────────────────────────────
+showVwap  = input.bool(true, "Show session VWAP", group = G_VWAP)
+colVwap   = input.color(#F5A623, "Line colour",   group = G_VWAP, tooltip = "Titan brand gold.")
+widVwap   = input.int(2, "Line width", minval = 1, maxval = 5, group = G_VWAP)
+
+// ── Bands ────────────────────────────────────────────────────────────────────
+showB1    = input.bool(true,  "Show ±σ1 band", group = G_BAND, inline = "b1")
+mult1     = input.float(1.0,  "×",             group = G_BAND, inline = "b1", minval = 0.1, step = 0.1)
+showB2    = input.bool(true,  "Show ±σ2 band", group = G_BAND, inline = "b2")
+mult2     = input.float(2.0,  "×",             group = G_BAND, inline = "b2", minval = 0.1, step = 0.1)
+colBand   = input.color(#8B7FD1, "Band colour", group = G_BAND, tooltip = "Titan lavender. Used for both band lines and the cloud fills.")
+widB1     = input.int(1, "σ1 line width", minval = 1, maxval = 4, group = G_BAND)
+widB2     = input.int(1, "σ2 line width", minval = 1, maxval = 4, group = G_BAND)
+showCloud = input.bool(true, "Shade the cloud", group = G_BAND)
+fillInner = input.int(88, "Inner fill transparency", minval = 0, maxval = 100, group = G_BAND)
+fillOuter = input.int(94, "Outer fill transparency", minval = 0, maxval = 100, group = G_BAND)
+
+// ── Anchored VWAP ────────────────────────────────────────────────────────────
+// NOTE: Pine Script cannot offer live click-to-anchor the way TradingView's
+// Anchored VWAP *drawing tool* does — a script has no access to mouse input and
+// no way to persist a user-placed point. The closest practical equivalent is an
+// input-driven anchor: pick a recurring boundary (Session / Day / Week / Month),
+// an absolute date-time via the date picker, or a bar offset from the right
+// edge. All three are set from the settings dialog and are fully deterministic.
+showAvwap  = input.bool(true, "Show anchored VWAP", group = G_ANCH)
+anchorType = input.string("Session", "Anchor type", group = G_ANCH, options = ["Session", "Day", "Week", "Month", "Custom date/time", "Manual bar offset"])
+anchorTime = input.time(timestamp("America/New_York", 2026, 1, 2, 9, 30), "Custom anchor date/time", group = G_ANCH, tooltip = "Used when Anchor type = 'Custom date/time'. Set this to an earnings date, a CPI print, an FOMC release, a swing high/low — anything you want price measured from.")
+anchorBack = input.int(200, "Manual anchor — bars back from last bar", minval = 0, maxval = 4999, group = G_ANCH, tooltip = "Used when Anchor type = 'Manual bar offset'.")
+anchorText = input.string("ANCHOR", "Anchor label text", group = G_ANCH, tooltip = "Free text, e.g. ANCHOR · LOW, ANCHOR · CUSTOM, ANCHOR · EARNINGS.")
+showAnchMk = input.bool(true, "Show anchor marker + label", group = G_ANCH)
+showAnchLn = input.bool(true, "Show vertical anchor line",  group = G_ANCH)
+colAvwap   = input.color(#22D3EE, "Anchored VWAP colour", group = G_ANCH, tooltip = "Titan cyan accent.")
+widAvwap   = input.int(2, "Line width", minval = 1, maxval = 5, group = G_ANCH)
+
+// ── Signals ──────────────────────────────────────────────────────────────────
+showTouch   = input.bool(true, "Band-touch signals (±σ2)", group = G_SIG, tooltip = "Flags a stretched, mean-reversion-candidate bar: high ≥ +σ2 band or low ≤ −σ2 band.")
+colTouchUp  = input.color(#F87171, "+σ2 colour", group = G_SIG, inline = "t")
+colTouchDn  = input.color(#34D399, "−σ2 colour", group = G_SIG, inline = "t")
+showReclaim = input.bool(true, "VWAP reclaim / lost signals", group = G_SIG, tooltip = "Close crosses back through session VWAP — trend confirmation.")
+colReclaim  = input.color(#34D399, "Reclaim colour", group = G_SIG, inline = "r")
+colLost     = input.color(#F87171, "Lost colour",    group = G_SIG, inline = "r")
+maxSigLbls  = input.int(60, "Max signal labels kept on chart", minval = 5, maxval = 400, group = G_SIG, tooltip = "Older signal labels are deleted so large charts never hit Pine's 500-drawing runtime limit.")
+
+// ── Stats panel ──────────────────────────────────────────────────────────────
+showStats  = input.bool(true, "Show stats panel", group = G_STAT)
+statsPos   = input.string("Top right", "Position", group = G_STAT, options = ["Top right", "Top left", "Middle right", "Bottom right", "Bottom left"])
+statsSize  = input.string("Small", "Text size", group = G_STAT, options = ["Tiny", "Small", "Normal"])
+
+// ── Multi-timeframe table ────────────────────────────────────────────────────
+showMtf    = input.bool(true, "Show multi-timeframe table", group = G_MTF)
+mtfPos     = input.string("Bottom right", "Position", group = G_MTF, options = ["Top right", "Top left", "Middle right", "Bottom right", "Bottom left"])
+mtfTf1     = input.timeframe("15",  "Timeframe 1", group = G_MTF)
+mtfTf2     = input.timeframe("60",  "Timeframe 2", group = G_MTF)
+mtfTf3     = input.timeframe("240", "Timeframe 3", group = G_MTF)
+mtfUse3    = input.bool(false, "Include timeframe 3", group = G_MTF)
+mtfConfirm = input.bool(true, "Use confirmed HTF values (non-repainting)", group = G_MTF, tooltip = "ON  → reads the last *closed* higher-timeframe value. Historical and real-time agree exactly; no repaint.\nOFF → reads the still-forming higher-timeframe value. More timely, but the reading updates until that HTF bar closes.")
+
+// ── Branding ─────────────────────────────────────────────────────────────────
+showTitle  = input.bool(true, "Show 'TITAN VWAP PRO' tag", group = G_BRAND)
+titlePos   = input.string("Top left", "Tag position", group = G_BRAND, options = ["Top right", "Top left", "Top center", "Bottom left", "Bottom center"])
+showMark   = input.bool(true, "Show TITANMARKETS watermark", group = G_BRAND)
+markPos    = input.string("Bottom left", "Watermark corner", group = G_BRAND, options = ["Bottom left", "Bottom right", "Bottom center"])
+markOpac   = input.int(78, "Watermark transparency", minval = 40, maxval = 98, group = G_BRAND)
+
+// ── Shared palette ───────────────────────────────────────────────────────────
+var color C_HUD_BG   = color.new(#0B0E11, 12)   // near-black translucent card
+var color C_HUD_EDGE = color.new(#2A2F38, 35)
+var color C_HUD_TXT  = #C9D1D9                  // light grey body text
+var color C_HUD_DIM  = #6E7681                  // muted labels
+var color C_HUD_HI   = #F5A623                  // amber value highlight
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  2. CORE — SESSION VWAP + VOLUME-WEIGHTED STANDARD DEVIATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Session boundary detection.
+//
+// The naive approach — "reset whenever the clock reads 09:30" — breaks on
+// 24-hour futures sessions and on any chart whose bars do not land exactly on
+// the boundary minute. Instead we shift every bar's timestamp back by the
+// session-start offset and reset when the *calendar day of the shifted stamp*
+// changes. That fires on exactly one bar per session: the first bar at or after
+// the session start, whatever the chart resolution, and it keeps working across
+// overnight/globex sessions where a single "trading day" spans two dates.
+// Day extraction is timezone-aware, so DST shifts follow the exchange clock.
+f_sessionVWAP(startMins, tz) =>
+    var float cumPV  = 0.0   // Σ volume × hlc3
+    var float cumV   = 0.0   // Σ volume
+    var float cumP2V = 0.0   // Σ volume × hlc3²  (for the volume-weighted variance)
+    shifted = time - startMins * 60000
+    isNew   = na(time[1]) or dayofmonth(shifted, tz) != dayofmonth(shifted[1], tz)
+    if isNew
+        cumPV  := 0.0
+        cumV   := 0.0
+        cumP2V := 0.0
+    float v   = nz(volume)
+    float src = hlc3
+    cumPV  += src * v
+    cumV   += v
+    cumP2V += src * src * v
+    float vw = cumV > 0 ? cumPV / cumV : na
+    // Volume-weighted variance: E_w[x²] − E_w[x]².  NOT ta.stdev(), which would
+    // weight every bar equally and is the single most common error in VWAP-band
+    // implementations. math.max(..., 0) guards against float cancellation.
+    float vr = cumV > 0 ? math.max(cumP2V / cumV - vw * vw, 0.0) : na
+    [vw, math.sqrt(vr), isNew, cumV]
+
+sessMinsOfDay = sessHour * 60 + sessMin
+[vwapVal, sigma, isNewSession, sessVol] = f_sessionVWAP(sessMinsOfDay, sessTz)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  3. DEVIATION BANDS
+// ─────────────────────────────────────────────────────────────────────────────
+
+upper1 = vwapVal + mult1 * sigma
+lower1 = vwapVal - mult1 * sigma
+upper2 = vwapVal + mult2 * sigma
+lower2 = vwapVal - mult2 * sigma
+
+// Pine's plot() has no dashed line style. Two techniques are used here:
+//   • style_linebr with a 2-on / 2-off bar mask produces a true dashed line
+//     that scales with the chart, unlike a circles/cross approximation.
+//   • separate zero-alpha "fill reference" plots carry the continuous series so
+//     the cloud fills stay intact even when a band's visible line is toggled off.
+dashOn = bar_index % 4 < 2
+
+pVwap = plot(showVwap ? vwapVal : na, "Session VWAP", color = colVwap, linewidth = widVwap)
+
+plot(showB1 ? upper1 : na, "+σ1", color = colBand, linewidth = widB1)
+plot(showB1 ? lower1 : na, "−σ1", color = colBand, linewidth = widB1)
+plot(showB2 and dashOn ? upper2 : na, "+σ2", color = color.new(colBand, 25), linewidth = widB2, style = plot.style_linebr)
+plot(showB2 and dashOn ? lower2 : na, "−σ2", color = color.new(colBand, 25), linewidth = widB2, style = plot.style_linebr)
+
+hVwap = plot(showCloud ? vwapVal : na, "· fill ref: VWAP", color = na, editable = false)
+hU1   = plot(showCloud and showB1 ? upper1 : na, "· fill ref: +σ1", color = na, editable = false)
+hL1   = plot(showCloud and showB1 ? lower1 : na, "· fill ref: −σ1", color = na, editable = false)
+hU2   = plot(showCloud and showB2 ? upper2 : na, "· fill ref: +σ2", color = na, editable = false)
+hL2   = plot(showCloud and showB2 ? lower2 : na, "· fill ref: −σ2", color = na, editable = false)
+
+fill(hVwap, hU1, color = color.new(colBand, fillInner), title = "Cloud · VWAP→+σ1")
+fill(hVwap, hL1, color = color.new(colBand, fillInner), title = "Cloud · VWAP→−σ1")
+fill(hU1,   hU2, color = color.new(colBand, fillOuter), title = "Cloud · +σ1→+σ2")
+fill(hL1,   hL2, color = color.new(colBand, fillOuter), title = "Cloud · −σ1→−σ2")
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  4. ANCHORED VWAP
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Anchor trigger — exactly one bar per anchor event.
+crossedCustom = not na(time) and time >= anchorTime and (na(time[1]) or time[1] < anchorTime)
+manualBar     = bar_index == math.max(last_bar_index - anchorBack, 0)
+
+isAnchorBar = switch anchorType
+    "Session"           => isNewSession
+    "Day"               => timeframe.change("D")
+    "Week"              => timeframe.change("W")
+    "Month"             => timeframe.change("M")
+    "Custom date/time"  => crossedCustom
+    "Manual bar offset" => manualBar
+    => false
+
+var float aCumPV = 0.0
+var float aCumV  = 0.0
+var int   aBarIx = na
+var float aPrice = na
+
+if isAnchorBar
+    aCumPV := 0.0
+    aCumV  := 0.0
+    aBarIx := bar_index
+    aPrice := close
+
+aCumPV += hlc3 * nz(volume)
+aCumV  += nz(volume)
+avwap   = aCumV > 0 ? aCumPV / aCumV : na
+
+// Dashed accent line, same 2-on / 2-off mask as the σ2 bands.
+plot(showAvwap and dashOn ? avwap : na, "Anchored VWAP", color = colAvwap, linewidth = widAvwap, style = plot.style_linebr)
+
+// Anchor marker: a triangle at the anchor bar plus one text label. Only the most
+// recent anchor keeps its drawing objects — the previous label/line are deleted
+// on every new anchor, so a year of 1-minute bars still holds exactly two.
+plotshape(showAvwap and showAnchMk and isAnchorBar, "Anchor marker", style = shape.triangleup, location = location.belowbar, color = colAvwap, size = size.tiny)
+
+var label anchorLbl = na
+var line  anchorLn  = na
+
+if isAnchorBar and showAvwap
+    label.delete(anchorLbl)
+    line.delete(anchorLn)
+    if showAnchMk
+        anchorLbl := label.new(bar_index, low, anchorText + " · " + str.upper(anchorType == "Custom date/time" ? "CUSTOM" : anchorType), style = label.style_label_up, color = color.new(#0B0E11, 15), textcolor = colAvwap, size = size.tiny, yloc = yloc.belowbar)
+    if showAnchLn
+        anchorLn := line.new(bar_index, low, bar_index, high, extend = extend.both, color = color.new(colAvwap, 78), width = 1, style = line.style_dotted)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  5. SIGNAL MARKERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Signal labels are pooled: the oldest is deleted once the pool exceeds the
+// user's cap, keeping the script well inside Pine's 500-drawing runtime limit
+// no matter how long the chart history is.
+var label[] sigPool = array.new_label()
+
+f_pushSignal(lb) =>
+    array.push(sigPool, lb)
+    while array.size(sigPool) > maxSigLbls
+        label.delete(array.shift(sigPool))
+
+bandsReady = not na(sigma) and sigma > 0
+
+touchUp = showTouch and bandsReady and showB2 and high >= upper2
+touchDn = showTouch and bandsReady and showB2 and low  <= lower2
+
+reclaim = showReclaim and not na(vwapVal) and not na(vwapVal[1]) and close > vwapVal and close[1] < vwapVal[1]
+lost    = showReclaim and not na(vwapVal) and not na(vwapVal[1]) and close < vwapVal and close[1] > vwapVal[1]
+
+plotshape(touchUp, "Touch +σ2", style = shape.triangledown, location = location.abovebar, color = colTouchUp, size = size.tiny)
+plotshape(touchDn, "Touch −σ2", style = shape.triangleup,   location = location.belowbar, color = colTouchDn, size = size.tiny)
+plotshape(reclaim, "VWAP Reclaim", style = shape.circle, location = location.belowbar, color = colReclaim, size = size.tiny)
+plotshape(lost,    "VWAP Lost",    style = shape.circle, location = location.abovebar, color = colLost,    size = size.tiny)
+
+if touchUp
+    f_pushSignal(label.new(bar_index, high, "+" + str.tostring(mult2, "#.##") + "σ", style = label.style_none, textcolor = colTouchUp, size = size.tiny, yloc = yloc.abovebar))
+if touchDn
+    f_pushSignal(label.new(bar_index, low, "−" + str.tostring(mult2, "#.##") + "σ", style = label.style_none, textcolor = colTouchDn, size = size.tiny, yloc = yloc.belowbar))
+if reclaim
+    f_pushSignal(label.new(bar_index, low, "VWAP RECLAIM", style = label.style_label_up, color = color.new(#0B0E11, 15), textcolor = colReclaim, size = size.tiny, yloc = yloc.belowbar))
+if lost
+    f_pushSignal(label.new(bar_index, high, "VWAP LOST", style = label.style_label_down, color = color.new(#0B0E11, 15), textcolor = colLost, size = size.tiny, yloc = yloc.abovebar))
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  6. LIVE STATS PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  Pine has no mouse-hover tooltip, so the equivalent is a persistent HUD card.
+//  It reports the LAST bar and is therefore live/unconfirmed by design while
+//  that bar is forming — this is the one place in the script where values move
+//  intrabar, and it is intentional.
+
+f_pos(s) =>
+    switch s
+        "Top right"     => position.top_right
+        "Top left"      => position.top_left
+        "Top center"    => position.top_center
+        "Middle right"  => position.middle_right
+        "Bottom right"  => position.bottom_right
+        "Bottom left"   => position.bottom_left
+        "Bottom center" => position.bottom_center
+        => position.top_right
+
+f_size(s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        => size.small
+
+f_px(p) => na(p) ? "—" : str.tostring(p, format.mintick)
+
+f_vol(v) =>
+    av = math.abs(nz(v))
+    av >= 1e9 ? str.tostring(v / 1e9, "0.00") + "B" : av >= 1e6 ? str.tostring(v / 1e6, "0.00") + "M" : av >= 1e3 ? str.tostring(v / 1e3, "0.0") + "K" : str.tostring(v, "0")
+
+devSigma = bandsReady ? (close - vwapVal) / sigma : na
+
+var table statsTbl = table.new(position.top_right, 2, 9, bgcolor = C_HUD_BG, border_color = C_HUD_EDGE, border_width = 1, frame_color = C_HUD_EDGE, frame_width = 1)
+
+f_row(t, r, k, v, vc) =>
+    table.cell(t, 0, r, k, text_color = C_HUD_DIM, text_size = f_size(statsSize), text_halign = text.align_left)
+    table.cell(t, 1, r, v, text_color = vc,        text_size = f_size(statsSize), text_halign = text.align_right)
+
+if barstate.islast
+    table.clear(statsTbl, 0, 0, 1, 8)
+    if showStats
+        table.set_position(statsTbl, f_pos(statsPos))
+        table.cell(statsTbl, 0, 0, "TITAN VWAP", text_color = C_HUD_HI, text_size = f_size(statsSize), text_halign = text.align_left)
+        table.cell(statsTbl, 1, 0, syminfo.ticker + " · " + timeframe.period, text_color = C_HUD_DIM, text_size = f_size(statsSize), text_halign = text.align_right)
+        f_row(statsTbl, 1, "O", f_px(open),  C_HUD_TXT)
+        f_row(statsTbl, 2, "H", f_px(high),  C_HUD_TXT)
+        f_row(statsTbl, 3, "L", f_px(low),   C_HUD_TXT)
+        f_row(statsTbl, 4, "C", f_px(close), close >= vwapVal ? #34D399 : #F87171)
+        f_row(statsTbl, 5, "VWAP", f_px(vwapVal), C_HUD_HI)
+        f_row(statsTbl, 6, "σ",    na(sigma) ? "—" : str.tostring(sigma, format.mintick), C_HUD_TXT)
+        f_row(statsTbl, 7, "DEV",  na(devSigma) ? "—" : str.tostring(devSigma, "0.00") + "σ", math.abs(nz(devSigma)) >= mult2 ? C_HUD_HI : C_HUD_TXT)
+        f_row(statsTbl, 8, "VOL  bar/sess", f_vol(volume) + "  /  " + f_vol(sessVol), C_HUD_TXT)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  7. MULTI-TIMEFRAME CONTEXT TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  Each higher timeframe runs the *same* session-VWAP routine in its own
+//  context. Two requests per timeframe are issued unconditionally (Pine forbids
+//  request.security() inside conditional branches); the user toggle simply
+//  selects which of the two results is displayed.
+//    • "raw"       → the still-forming HTF value: timely, updates until close.
+//    • "confirmed" → expr[1] evaluated *inside* the HTF context, i.e. the last
+//                    fully closed HTF bar. Historical and real-time agree, so
+//                    the reading never repaints. This is the default.
+//  barmerge.lookahead_off everywhere — lookahead_on would leak future data.
+
+f_htfVwapRaw() =>
+    [v, _s, _n, _c] = f_sessionVWAP(sessMinsOfDay, sessTz)
+    v
+
+f_htfVwapConfirmed() =>
+    [v, _s, _n, _c] = f_sessionVWAP(sessMinsOfDay, sessTz)
+    v[1]
+
+f_htf(tf) =>
+    raw  = request.security(syminfo.tickerid, tf, f_htfVwapRaw(),       lookahead = barmerge.lookahead_off)
+    conf = request.security(syminfo.tickerid, tf, f_htfVwapConfirmed(), lookahead = barmerge.lookahead_off)
+    mtfConfirm ? conf : raw
+
+htf1 = f_htf(mtfTf1)
+htf2 = f_htf(mtfTf2)
+htf3 = f_htf(mtfUse3 ? mtfTf3 : mtfTf2)
+
+var table mtfTbl = table.new(position.bottom_right, 3, 5, bgcolor = C_HUD_BG, border_color = C_HUD_EDGE, border_width = 1, frame_color = C_HUD_EDGE, frame_width = 1)
+
+// Price above a timeframe's VWAP = bullish alignment on that timeframe.
+f_mtfRow(t, r, tf, v) =>
+    bull = not na(v) and close >= v
+    table.cell(t, 0, r, tf, text_color = C_HUD_DIM, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(t, 1, r, f_px(v), text_color = C_HUD_TXT, text_size = size.tiny, text_halign = text.align_right)
+    table.cell(t, 2, r, na(v) ? "—" : bull ? "▲" : "▼", text_color = na(v) ? C_HUD_DIM : bull ? #34D399 : #F87171, text_size = size.tiny, text_halign = text.align_center)
+
+if barstate.islast
+    table.clear(mtfTbl, 0, 0, 2, 4)
+    if showMtf
+        table.set_position(mtfTbl, f_pos(mtfPos))
+        table.cell(mtfTbl, 0, 0, "VWAP", text_color = C_HUD_HI,  text_size = size.tiny, text_halign = text.align_left)
+        table.cell(mtfTbl, 1, 0, "VALUE", text_color = C_HUD_DIM, text_size = size.tiny, text_halign = text.align_right)
+        table.cell(mtfTbl, 2, 0, mtfConfirm ? "✓" : "~", text_color = C_HUD_DIM, text_size = size.tiny, text_halign = text.align_center)
+        f_mtfRow(mtfTbl, 1, timeframe.period + " ·", vwapVal)
+        f_mtfRow(mtfTbl, 2, mtfTf1, htf1)
+        f_mtfRow(mtfTbl, 3, mtfTf2, htf2)
+        if mtfUse3
+            f_mtfRow(mtfTbl, 4, mtfTf3, htf3)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  8. BRANDING
+// ─────────────────────────────────────────────────────────────────────────────
+
+var table titleTbl = table.new(position.top_left, 1, 1)
+var table markTbl  = table.new(position.bottom_left, 1, 1)
+
+if barstate.islast
+    table.clear(titleTbl, 0, 0)
+    table.clear(markTbl, 0, 0)
+    if showTitle
+        table.set_position(titleTbl, f_pos(titlePos))
+        table.cell(titleTbl, 0, 0, "TITAN VWAP PRO", text_color = C_HUD_HI, text_size = size.tiny, bgcolor = color.new(#0B0E11, 35), text_halign = text.align_left)
+    if showMark
+        table.set_position(markTbl, f_pos(markPos))
+        table.cell(markTbl, 0, 0, "TITANMARKETS", text_color = color.new(C_HUD_HI, markOpac), text_size = size.normal, bgcolor = color.new(color.black, 100))
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  9. ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  alertcondition() messages must be compile-time constants, so runtime values
+//  are injected with TradingView's own {{...}} placeholders.
+
+avwapCrossUp = not na(avwap) and ta.crossover(close, avwap)
+avwapCrossDn = not na(avwap) and ta.crossunder(close, avwap)
+
+alertcondition(reclaim,      "VWAP Reclaim (bullish)", "TITAN VWAP PRO · {{ticker}} {{interval}} — VWAP RECLAIM: close {{close}} back above session VWAP. Trend confirmation long.")
+alertcondition(lost,         "VWAP Lost (bearish)",    "TITAN VWAP PRO · {{ticker}} {{interval}} — VWAP LOST: close {{close}} back below session VWAP. Trend confirmation short.")
+alertcondition(touchUp,      "Price at +σ2 band",      "TITAN VWAP PRO · {{ticker}} {{interval}} — price tagged the UPPER σ2 band at {{high}}. Stretched / mean-reversion candidate short.")
+alertcondition(touchDn,      "Price at −σ2 band",      "TITAN VWAP PRO · {{ticker}} {{interval}} — price tagged the LOWER σ2 band at {{low}}. Stretched / mean-reversion candidate long.")
+alertcondition(avwapCrossUp, "Anchored VWAP crossed up",   "TITAN VWAP PRO · {{ticker}} {{interval}} — close {{close}} crossed ABOVE the anchored VWAP.")
+alertcondition(avwapCrossDn, "Anchored VWAP crossed down", "TITAN VWAP PRO · {{ticker}} {{interval}} — close {{close}} crossed BELOW the anchored VWAP.")
